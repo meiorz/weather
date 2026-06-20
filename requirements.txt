@@ -1,3 +1,5 @@
 requests
 rich
-textual
+# Pin textual to a stable version known to work with run_test and pytest async tests
+textual==0.72.0
+pytest-asyncio
