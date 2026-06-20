@@ -7,4 +7,4 @@ A terminal-based Python script that fetches real-time NOAA Weather, Open-Meteo A
 ## How to run
 
 1. Install dependencies: `pip install -r requirements.txt`
-2. Run the script: `python weather_dashboard.py`
+2. Run the script: `python main.py`
