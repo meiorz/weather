@@ -55,7 +55,6 @@ def _install_fake_backends(monkeypatch):
     monkeypatch.setattr(tui_app, "fetch_uv", fake_fetch_uv)
     monkeypatch.setattr(tui_app, "get_forecast_digest", fake_get_forecast_digest, raising=False)
 
-
 @pytest.mark.asyncio
 async def test_tui_starts_and_focuses_command_input(monkeypatch):
     _install_fake_backends(monkeypatch)
@@ -63,7 +62,6 @@ async def test_tui_starts_and_focuses_command_input(monkeypatch):
     async with WeatherApp().run_test() as pilot:
         cmd_input = pilot.app.query_one("#command-input")
         assert cmd_input.has_focus, "Command input should be focused on mount"
-
 
 @pytest.mark.asyncio
 async def test_help_command_adds_panel(monkeypatch):
@@ -77,9 +75,7 @@ async def test_help_command_adds_panel(monkeypatch):
         await app._handle_command(":help")
 
         panels = getattr(view, "_panels", [])
-        # Panel list should have grown after :help
         assert len(panels) > initial_count
-
 
 @pytest.mark.asyncio
 async def test_interval_pause_resume_update_state(monkeypatch):
