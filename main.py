@@ -1,38 +1,41 @@
-import time
+import argparse
 import csv
 import os
 import sys
-import argparse
-import requests
+import time
+from dataclasses import dataclass
 from datetime import datetime
+
+import requests
+from rich import box
 from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
-from rich import box
-from geocode_location import geocode_location
-from forecast_digest import get_forecast_digest
 
-CSV_FILE = "weather_log.csv"
-HEADERS = {"User-Agent": "PythonWeatherScript/2.0", "Accept": "application/geo+json"}
-TIMEOUT = 60
+from config import CSV_FILE, DEFAULT_SLEEP_MINUTES, HEADERS, TIMEOUT
+from forecast_digest import get_forecast_digest
+from geocode_location import geocode_location
 
 console = Console()
 session = requests.Session()
 
-location_name: str = ""
-LAT: float = 0.0
-LON: float = 0.0
+
+@dataclass(frozen=True)
+class LocationContext:
+    name: str
+    lat: float
+    lon: float
 
 
 def get_aqi_category(aqi, *, rich: bool = False) -> str:
     """Return AQI category string. Pass rich=True for Rich markup color tags."""
     aqi = float(aqi)
     levels = [
-        (50,  "Good",                              "[green]",       "[/green]"),
-        (100, "Moderate",                          "[yellow]",      "[/yellow]"),
-        (150, "Unhealthy for Sensitive Groups",    "[dark_orange]", "[/dark_orange]"),
-        (200, "Unhealthy",                         "[red]",         "[/red]"),
-        (300, "Very Unhealthy",                    "[purple]",      "[/purple]"),
+        (50, "Good", "[green]", "[/green]"),
+        (100, "Moderate", "[yellow]", "[/yellow]"),
+        (150, "Unhealthy for Sensitive Groups", "[dark_orange]", "[/dark_orange]"),
+        (200, "Unhealthy", "[red]", "[/red]"),
+        (300, "Very Unhealthy", "[purple]", "[/purple]"),
     ]
     for threshold, label, open_tag, close_tag in levels:
         if aqi <= threshold:
@@ -40,20 +43,43 @@ def get_aqi_category(aqi, *, rich: bool = False) -> str:
     return "[blink red]Hazardous[/blink red]" if rich else "Hazardous"
 
 
-def create_weather_panel(data: dict) -> Panel:
+def create_weather_panel(data: dict, location_name: str) -> Panel:
     table = Table(show_header=False, box=box.SIMPLE)
     table.add_column("Metric", style="dim", width=15)
     table.add_column("Value", style="bold white")
-    table.add_row("Period",      data["Period"])
-    table.add_row("Forecast",    data["Forecast"])
+    table.add_row("Period", data["Period"])
+    table.add_row("Forecast", data["Forecast"])
     table.add_row("Temperature", f"[green]{data['Temperature']}[/green]")
-    table.add_row("Wind",        data["Wind"])
-    table.add_row("UV Index",    f"[magenta]{data['UV_Index']}[/magenta]")
+    table.add_row("Wind", data["Wind"])
+    table.add_row("UV Index", f"[magenta]{data['UV_Index']}[/magenta]")
     table.add_row("Air Quality", f"{data['AQI']} US AQI ({data['AQI_Category_Rich']})")
 
     return Panel(
         table,
         title=f"[bold cyan]{location_name}[/bold cyan] | {data['Timestamp']}",
+        border_style="cyan",
+        expand=False,
+    )
+
+
+def create_digest_panel(digest: list[dict], location: str) -> Panel:
+    table = Table(show_header=True, box=box.SIMPLE_HEAD)
+    table.add_column("Period", style="bold cyan", min_width=16)
+    table.add_column("Temp", style="green", min_width=6)
+    table.add_column("Wind", style="white", min_width=14)
+    table.add_column("Forecast", style="dim white", min_width=20)
+
+    for p in digest:
+        table.add_row(
+            p["name"],
+            f"{p['temperature']}°{p['temp_unit']}",
+            p["wind"],
+            p["short_forecast"],
+        )
+
+    return Panel(
+        table,
+        title=f"[bold cyan]{location}[/bold cyan] | 6-Period Digest",
         border_style="cyan",
         expand=False,
     )
@@ -68,29 +94,6 @@ def safe_get(d: dict, *keys, default="N/A"):
     return cur
 
 
-def create_digest_panel(digest: list[dict], location: str) -> Panel:
-    table = Table(show_header=True, box=box.SIMPLE_HEAD)
-    table.add_column("Period",   style="bold cyan",  min_width=16)
-    table.add_column("Temp",     style="green",       min_width=6)
-    table.add_column("Wind",     style="white",       min_width=14)
-    table.add_column("Forecast", style="dim white",   min_width=20)
-
-    for p in digest:
-        table.add_row(
-            p["name"],
-            f"{p['temperature']}\u00b0{p['temp_unit']}",
-            p["wind"],
-            p["short_forecast"],
-        )
-
-    return Panel(
-        table,
-        title=f"[bold cyan]{location}[/bold cyan] | 6-Period Digest",
-        border_style="cyan",
-        expand=False,
-    )
-
-
 def get_json(url: str, *, headers=None, params=None, timeout: int = TIMEOUT, retries: int = 3):
     for attempt in range(retries):
         try:
@@ -103,40 +106,76 @@ def get_json(url: str, *, headers=None, params=None, timeout: int = TIMEOUT, ret
             time.sleep(2 ** attempt)
 
 
-def run():
-    global location_name, LAT, LON
+def build_location_context(location_name: str, user_agent: str | None) -> LocationContext:
+    lat, lon = geocode_location(location_name, user_agent=user_agent)
+    return LocationContext(name=location_name, lat=lat, lon=lon)
 
+
+def fetch_forecast_period(forecast_url: str) -> dict:
+    forecast_json = get_json(forecast_url, headers=HEADERS)
+    return safe_get(forecast_json, "properties", "periods", default=[{}])[0]
+
+
+def fetch_aqi(lat: float, lon: float):
+    aq_url = (
+        f"https://air-quality-api.open-meteo.com/v1/air-quality"
+        f"?latitude={lat}&longitude={lon}&current=us_aqi"
+    )
+    aq_json = get_json(aq_url, timeout=TIMEOUT)
+    return safe_get(aq_json, "current", "us_aqi")
+
+
+def fetch_uv(lat: float, lon: float):
+    uv_url = (
+        f"https://api.open-meteo.com/v1/forecast"
+        f"?latitude={lat}&longitude={lon}&current=uv_index"
+    )
+    uv_json = get_json(uv_url, timeout=TIMEOUT)
+    return safe_get(uv_json, "current", "uv_index")
+
+
+def run():
     parser = argparse.ArgumentParser(description="Terminal weather dashboard")
-    parser.add_argument("--location", "-l", type=str, default=None,
-                        help="Location string (skips interactive prompt)")
-    parser.add_argument("--digest", action="store_true",
-                        help="Print 6-period forecast digest and exit")
-    parser.add_argument("--watch", action="store_true",
-                        help="With --digest: refresh every 6 hours instead of exiting")
+    parser.add_argument("--location", "-l", type=str, default=None, help="Location string (skips interactive prompt)")
+    parser.add_argument("--digest", action="store_true", help="Print 6-period forecast digest and exit")
+    parser.add_argument("--watch", action="store_true", help="With --digest: refresh every 6 hours instead of exiting")
+    parser.add_argument("--sleep-minutes", type=int, default=DEFAULT_SLEEP_MINUTES, help="Polling interval in minutes")
+    parser.add_argument(
+        "--geocoder-user-agent",
+        type=str,
+        default=None,
+        help="Identifier for Nominatim requests; if omitted, you will be prompted interactively",
+    )
     args = parser.parse_args()
 
-    loc = args.location if args.location else input("Enter your location: ")
-    LAT, LON = geocode_location(loc)
-    location_name = loc
+    if args.watch and not args.digest:
+        parser.error("--watch requires --digest")
+    if args.sleep_minutes <= 0:
+        parser.error("--sleep-minutes must be a positive integer")
 
-    console.print(f"[bold cyan]Initializing connections for {location_name} ({LAT}, {LON})...[/bold cyan]")
+    loc = args.location if args.location else input("Enter your location: ")
+    geocoder_user_agent = args.geocoder_user_agent or input("Enter geocoder user agent (email/app id, no default personal email): ").strip()
+    location = build_location_context(loc, geocoder_user_agent)
+
+    console.print(f"[bold cyan]Initializing connections for {location.name} ({location.lat}, {location.lon})...[/bold cyan]")
 
     try:
         if args.digest:
             while True:
-                digest = get_forecast_digest(LAT, LON, session=session)
-                console.print(create_digest_panel(digest, location_name))
+                digest = get_forecast_digest(location.lat, location.lon, session=session)
+                console.print(create_digest_panel(digest, location.name))
                 if not args.watch:
                     sys.exit(0)
                 with console.status("[bold dark_gray]Next digest in 6 hours...[/bold dark_gray]", spinner="dots"):
                     time.sleep(6 * 60 * 60)
 
-        points_url = f"https://api.weather.gov/points/{LAT},{LON}"
+        points_url = f"https://api.weather.gov/points/{location.lat},{location.lon}"
         points_json = get_json(points_url, headers=HEADERS)
-        forecast_url = points_json["properties"]["forecast"]
+        forecast_url = safe_get(points_json, "properties", "forecast")
+        if forecast_url == "N/A":
+            raise ValueError("NOAA points response did not include a forecast URL")
 
-        fieldnames = ["Timestamp", "Location", "Period", "Forecast",
-                      "Temperature", "Wind", "UV_Index", "AQI", "AQI_Category"]
+        fieldnames = ["Timestamp", "Location", "Period", "Forecast", "Temperature", "Wind", "UV_Index", "AQI", "AQI_Category"]
 
         console.print(
             f"[bold green]Grid endpoints retrieved.[/bold green] "
@@ -146,56 +185,61 @@ def run():
         while True:
             timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-            forecast_json = get_json(forecast_url, headers=HEADERS)
-            period = forecast_json["properties"]["periods"][0]
+            try:
+                period = fetch_forecast_period(forecast_url)
+            except requests.RequestException as e:
+                console.print(f"[bold red]Forecast fetch failed:[/bold red] {e}")
+                period = {}
 
-            temp      = period.get("temperature", "N/A")
-            temp_unit = period.get("temperatureUnit", "F")
-            wind_speed = period.get("windSpeed")
-            wind_dir   = period.get("windDirection")
-            wind = "N/A" if (wind_speed is None and wind_dir is None) else f"{wind_speed} {wind_dir}".strip()
+            try:
+                aqi = fetch_aqi(location.lat, location.lon)
+            except requests.RequestException as e:
+                console.print(f"[bold red]AQI fetch failed:[/bold red] {e}")
+                aqi = "N/A"
 
-            aq_url = (f"https://air-quality-api.open-meteo.com/v1/air-quality"
-                      f"?latitude={LAT}&longitude={LON}&current=us_aqi")
-            aqi = get_json(aq_url, timeout=TIMEOUT).get("current", {}).get("us_aqi", "N/A")
+            try:
+                uv = fetch_uv(location.lat, location.lon)
+            except requests.RequestException as e:
+                console.print(f"[bold red]UV fetch failed:[/bold red] {e}")
+                uv = "N/A"
 
-            uv_url = (f"https://api.open-meteo.com/v1/forecast"
-                      f"?latitude={LAT}&longitude={LON}&current=uv_index")
-            uv = get_json(uv_url, timeout=TIMEOUT).get("current", {}).get("uv_index", "N/A")
+            temp = safe_get(period, "temperature")
+            temp_unit = safe_get(period, "temperatureUnit", default="F")
+            wind_speed = safe_get(period, "windSpeed")
+            wind_dir = safe_get(period, "windDirection")
+            wind = "N/A" if (wind_speed == "N/A" and wind_dir == "N/A") else f"{wind_speed} {wind_dir}".strip()
 
             plain_cat = get_aqi_category(aqi) if aqi != "N/A" else "N/A"
-            rich_cat  = get_aqi_category(aqi, rich=True) if aqi != "N/A" else "N/A"
+            rich_cat = get_aqi_category(aqi, rich=True) if aqi != "N/A" else "N/A"
 
             data = {
-                "Timestamp":         timestamp,
-                "Location":          location_name,
-                "Period":            period.get("name", "N/A"),
-                "Forecast":          period.get("shortForecast", "N/A"),
-                "Temperature":       f"{temp}\u00b0{temp_unit}",
-                "Wind":              wind,
-                "UV_Index":          uv,
-                "AQI":               aqi,
-                "AQI_Category":      plain_cat,
+                "Timestamp": timestamp,
+                "Location": location.name,
+                "Period": safe_get(period, "name"),
+                "Forecast": safe_get(period, "shortForecast"),
+                "Temperature": f"{temp}°{temp_unit}",
+                "Wind": wind,
+                "UV_Index": uv,
+                "AQI": aqi,
+                "AQI_Category": plain_cat,
                 "AQI_Category_Rich": rich_cat,
             }
 
-            console.print(create_weather_panel(data))
+            console.print(create_weather_panel(data, location.name))
 
             file_exists = os.path.isfile(CSV_FILE)
             csv_row = {k: data[k] for k in fieldnames}
-
             with open(CSV_FILE, mode="a", newline="") as f:
                 writer = csv.DictWriter(f, fieldnames=fieldnames)
                 if not file_exists:
                     writer.writeheader()
                 writer.writerow(csv_row)
 
-            sleep_minutes = 30
             with console.status(
-                f"[bold dark_gray]Sleeping for {sleep_minutes} minutes... Next fetch scheduled.[/bold dark_gray]",
+                f"[bold dark_gray]Sleeping for {args.sleep_minutes} minutes... Next fetch scheduled.[/bold dark_gray]",
                 spinner="dots",
             ):
-                time.sleep(sleep_minutes * 60)
+                time.sleep(args.sleep_minutes * 60)
 
     except KeyboardInterrupt:
         console.print("\n[bold red]Script terminated by user.[/bold red]")

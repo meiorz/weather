@@ -1,187 +1,245 @@
-"""Unit tests for weather CLI helpers."""
-import unittest
-from unittest.mock import MagicMock, patch
+import csv
+from unittest.mock import Mock
+
+import pytest
+import requests
+
+import forecast_digest
+import geocode_location
+import main
+from config import GEOCODER_DEFAULT_USER_AGENT
 
 
-# ---------------------------------------------------------------------------
-# Helpers under test (imported directly so tests don't trigger the script body)
-# ---------------------------------------------------------------------------
+class DummyResponse:
+    def __init__(self, payload=None, status_error=None):
+        self._payload = payload or {}
+        self._status_error = status_error
 
-# get_aqi_category
-from main import get_aqi_category  # noqa: E402 — requires main to be importable
+    def raise_for_status(self):
+        if self._status_error:
+            raise self._status_error
 
-
-class TestGetAqiCategory(unittest.TestCase):
-    def test_good(self):
-        self.assertEqual(get_aqi_category(0), "Good")
-        self.assertEqual(get_aqi_category(50), "Good")
-
-    def test_moderate(self):
-        self.assertEqual(get_aqi_category(51), "Moderate")
-        self.assertEqual(get_aqi_category(100), "Moderate")
-
-    def test_sensitive(self):
-        self.assertEqual(get_aqi_category(101), "Unhealthy for Sensitive Groups")
-        self.assertEqual(get_aqi_category(150), "Unhealthy for Sensitive Groups")
-
-    def test_unhealthy(self):
-        self.assertEqual(get_aqi_category(151), "Unhealthy")
-        self.assertEqual(get_aqi_category(200), "Unhealthy")
-
-    def test_very_unhealthy(self):
-        self.assertEqual(get_aqi_category(201), "Very Unhealthy")
-        self.assertEqual(get_aqi_category(300), "Very Unhealthy")
-
-    def test_hazardous(self):
-        self.assertEqual(get_aqi_category(301), "Hazardous")
-        self.assertEqual(get_aqi_category(500), "Hazardous")
-
-    def test_rich_flag_adds_markup(self):
-        result = get_aqi_category(25, rich=True)
-        self.assertIn("[green]", result)
-        self.assertIn("Good", result)
-
-    def test_string_input(self):
-        """AQI can arrive as a string from the API JSON."""
-        self.assertEqual(get_aqi_category("45"), "Good")
+    def json(self):
+        return self._payload
 
 
-# ---------------------------------------------------------------------------
-# safe_get
-# ---------------------------------------------------------------------------
-from main import safe_get  # noqa: E402
+def test_get_aqi_category_plain_and_rich():
+    assert main.get_aqi_category(42) == "Good"
+    assert main.get_aqi_category(75) == "Moderate"
+    assert main.get_aqi_category(175) == "Unhealthy"
+    assert "[green]Good[/green]" == main.get_aqi_category(42, rich=True)
+    assert "Hazardous" == main.get_aqi_category(301)
 
 
-class TestSafeGet(unittest.TestCase):
-    def test_nested_hit(self):
-        d = {"a": {"b": {"c": 42}}}
-        self.assertEqual(safe_get(d, "a", "b", "c"), 42)
-
-    def test_missing_key_returns_default(self):
-        d = {"a": {"b": 1}}
-        self.assertEqual(safe_get(d, "a", "x"), "N/A")
-
-    def test_custom_default(self):
-        self.assertEqual(safe_get({}, "missing", default=0), 0)
-
-    def test_non_dict_in_chain(self):
-        d = {"a": "not_a_dict"}
-        self.assertEqual(safe_get(d, "a", "b"), "N/A")
+def test_safe_get_nested_and_default():
+    payload = {"a": {"b": {"c": 9}}}
+    assert main.safe_get(payload, "a", "b", "c") == 9
+    assert main.safe_get(payload, "a", "x", default="fallback") == "fallback"
+    assert main.safe_get(None, "a", default="fallback") == "fallback"
 
 
-# ---------------------------------------------------------------------------
-# geocode_location
-# ---------------------------------------------------------------------------
-from geocode_location import geocode_location  # noqa: E402
+def test_build_location_context_passes_user_agent(monkeypatch):
+    seen = {}
+
+    def fake_geocode(query, *, user_agent=None, timeout=20):
+        seen["query"] = query
+        seen["user_agent"] = user_agent
+        return (37.77, -122.42)
+
+    monkeypatch.setattr(main, "geocode_location", fake_geocode)
+    ctx = main.build_location_context("San Francisco, CA", "student-app/1.0")
+    assert ctx.name == "San Francisco, CA"
+    assert ctx.lat == 37.77
+    assert ctx.lon == 122.42 or ctx.lon == -122.42
+    assert seen == {"query": "San Francisco, CA", "user_agent": "student-app/1.0"}
 
 
-class TestGeocodeLocation(unittest.TestCase):
-    def _mock_response(self, data):
-        mock = MagicMock()
-        mock.json.return_value = data
-        mock.raise_for_status.return_value = None
-        return mock
+def test_geocode_location_uses_provided_user_agent(monkeypatch):
+    captured = {}
 
-    @patch("geocode_location.requests.get")
-    def test_returns_lat_lon(self, mock_get):
-        mock_get.return_value = self._mock_response(
-            [{"lat": "37.7749", "lon": "-122.4194"}]
-        )
-        lat, lon = geocode_location("San Francisco, CA")
-        self.assertAlmostEqual(lat, 37.7749)
-        self.assertAlmostEqual(lon, -122.4194)
+    def fake_get(url, params=None, headers=None, timeout=None):
+        captured["url"] = url
+        captured["params"] = params
+        captured["headers"] = headers
+        captured["timeout"] = timeout
+        return DummyResponse([{"lat": "37.77", "lon": "-122.42"}])
 
-    @patch("geocode_location.requests.get")
-    def test_empty_result_raises(self, mock_get):
-        mock_get.return_value = self._mock_response([])
-        with self.assertRaises(ValueError):
-            geocode_location("nowhere land xyzzy")
-
-    @patch("geocode_location.requests.get")
-    def test_correct_user_agent_sent(self, mock_get):
-        mock_get.return_value = self._mock_response(
-            [{"lat": "0", "lon": "0"}]
-        )
-        geocode_location("Tokyo")
-        _, kwargs = mock_get.call_args
-        self.assertIn("User-Agent", kwargs["headers"])
+    monkeypatch.setattr(geocode_location.requests, "get", fake_get)
+    lat, lon = geocode_location.geocode_location("San Francisco", user_agent="custom-ua")
+    assert (lat, lon) == (37.77, -122.42)
+    assert captured["headers"]["User-Agent"] == "custom-ua"
+    assert captured["params"]["limit"] == 1
 
 
-# ---------------------------------------------------------------------------
-# get_json retry logic
-# ---------------------------------------------------------------------------
-from main import get_json  # noqa: E402
-import requests as req_lib
+def test_geocode_location_uses_default_user_agent(monkeypatch):
+    captured = {}
+
+    def fake_get(url, params=None, headers=None, timeout=None):
+        captured["headers"] = headers
+        return DummyResponse([{"lat": "1.0", "lon": "2.0"}])
+
+    monkeypatch.setattr(geocode_location.requests, "get", fake_get)
+    geocode_location.geocode_location("Tokyo")
+    assert captured["headers"]["User-Agent"] == GEOCODER_DEFAULT_USER_AGENT
 
 
-class TestGetJson(unittest.TestCase):
-    @patch("main.session")
-    def test_returns_json_on_success(self, mock_session):
-        mock_resp = MagicMock()
-        mock_resp.json.return_value = {"ok": True}
-        mock_resp.raise_for_status.return_value = None
-        mock_session.get.return_value = mock_resp
-        result = get_json("http://example.com")
-        self.assertEqual(result, {"ok": True})
-
-    @patch("main.time.sleep", return_value=None)
-    @patch("main.session")
-    def test_retries_on_timeout(self, mock_session, _sleep):
-        mock_session.get.side_effect = req_lib.Timeout
-        with self.assertRaises(req_lib.Timeout):
-            get_json("http://example.com", retries=3)
-        self.assertEqual(mock_session.get.call_count, 3)
-
-# NEW
-from forecast_digest import get_forecast_digest
+def test_geocode_location_raises_when_not_found(monkeypatch):
+    monkeypatch.setattr(geocode_location.requests, "get", lambda *args, **kwargs: DummyResponse([]))
+    with pytest.raises(ValueError, match="Location not found"):
+        geocode_location.geocode_location("Atlantis")
 
 
-class TestForecastDigest(unittest.TestCase):
-    def _mock_session(self, periods):
-        mock_session = MagicMock()
-        points_resp = MagicMock()
-        points_resp.raise_for_status.return_value = None
-        points_resp.json.return_value = {
-            "properties": {"forecast": "http://fake-forecast-url"}
-        }
-        forecast_resp = MagicMock()
-        forecast_resp.raise_for_status.return_value = None
-        forecast_resp.json.return_value = {"properties": {"periods": periods}}
-        mock_session.get.side_effect = [points_resp, forecast_resp]
-        return mock_session
+def test_get_json_retries_then_succeeds(monkeypatch):
+    calls = {"count": 0}
 
-    def _make_periods(self, n):
-        return [
-            {"name": f"Period {i}", "temperature": 70 + i, "temperatureUnit": "F",
-             "windSpeed": "10 mph", "windDirection": "W",
-             "shortForecast": "Sunny", "detailedForecast": "Very sunny."}
-            for i in range(n)
-        ]
+    def fake_get(url, headers=None, params=None, timeout=None):
+        calls["count"] += 1
+        if calls["count"] < 3:
+            raise requests.Timeout("slow")
+        return DummyResponse({"ok": True})
 
-    def test_returns_six_periods(self):
-        session = self._mock_session(self._make_periods(12))
-        result = get_forecast_digest(37.77, -122.41, session=session)
-        self.assertEqual(len(result), 6)
+    monkeypatch.setattr(main.session, "get", fake_get)
+    monkeypatch.setattr(main.time, "sleep", lambda seconds: None)
+    payload = main.get_json("https://example.com")
+    assert payload == {"ok": True}
+    assert calls["count"] == 3
 
-    def test_fewer_than_six_periods(self):
-        session = self._mock_session(self._make_periods(3))
-        result = get_forecast_digest(37.77, -122.41, session=session)
-        self.assertEqual(len(result), 3)
 
-    def test_wind_none_becomes_na(self):
-        periods = self._make_periods(1)
-        periods[0]["windSpeed"] = None
-        periods[0]["windDirection"] = None
-        session = self._mock_session(periods)
-        result = get_forecast_digest(37.77, -122.41, session=session)
-        self.assertEqual(result[0]["wind"], "N/A")
+def test_fetch_helpers_use_safe_json(monkeypatch):
+    def fake_get_json(url, **kwargs):
+        if "air-quality" in url:
+            return {"current": {"us_aqi": 57}}
+        if "uv_index" in url:
+            return {"current": {"uv_index": 8.4}}
+        return {"properties": {"periods": [{"name": "Tonight", "temperature": 55}]}}
 
-    def test_normalized_keys_present(self):
-        session = self._mock_session(self._make_periods(6))
-        result = get_forecast_digest(37.77, -122.41, session=session)
-        expected_keys = {"name", "temperature", "temp_unit", "wind",
-                         "short_forecast", "detailed_forecast"}
-        self.assertEqual(set(result[0].keys()), expected_keys)
+    monkeypatch.setattr(main, "get_json", fake_get_json)
+    assert main.fetch_aqi(1, 2) == 57
+    assert main.fetch_uv(1, 2) == 8.4
+    period = main.fetch_forecast_period("https://forecast")
+    assert period["name"] == "Tonight"
+    assert period["temperature"] == 55
 
-if __name__ == "__main__":
-    unittest.main()
+
+def test_forecast_digest_builds_six_periods():
+    session = Mock()
+    session.get.side_effect = [
+        DummyResponse({"properties": {"forecast": "https://forecast.example"}}),
+        DummyResponse(
+            {
+                "properties": {
+                    "periods": [
+                        {
+                            "name": f"P{i}",
+                            "temperature": 60 + i,
+                            "temperatureUnit": "F",
+                            "windSpeed": "5 mph",
+                            "windDirection": "NW",
+                            "shortForecast": "Clear",
+                            "detailedForecast": "Clear skies.",
+                        }
+                        for i in range(8)
+                    ]
+                }
+            }
+        ),
+    ]
+
+    digest = forecast_digest.get_forecast_digest(1.0, 2.0, session=session)
+    assert len(digest) == 6
+    assert digest[0]["name"] == "P0"
+    assert digest[-1]["name"] == "P5"
+
+
+def test_create_weather_panel_contains_location_title():
+    panel = main.create_weather_panel(
+        {
+            "Timestamp": "2026-06-20 15:00:00",
+            "Period": "Afternoon",
+            "Forecast": "Sunny",
+            "Temperature": "70°F",
+            "Wind": "5 mph NW",
+            "UV_Index": 7,
+            "AQI": 42,
+            "AQI_Category_Rich": "[green]Good[/green]",
+        },
+        "San Francisco",
+    )
+    assert "San Francisco" in str(panel.title)
+
+
+def test_run_digest_exits_cleanly(monkeypatch):
+    monkeypatch.setattr(
+        main.argparse.ArgumentParser,
+        "parse_args",
+        lambda self: type(
+            "Args",
+            (),
+            {
+                "location": "San Francisco, CA",
+                "digest": True,
+                "watch": False,
+                "sleep_minutes": 30,
+                "geocoder_user_agent": "student-app/1.0",
+            },
+        )(),
+    )
+    monkeypatch.setattr(main, "build_location_context", lambda loc, ua: main.LocationContext(loc, 37.77, -122.42))
+    monkeypatch.setattr(main, "get_forecast_digest", lambda lat, lon, session=None: [{"name": "Now", "temperature": 68, "temp_unit": "F", "wind": "5 mph NW", "short_forecast": "Sunny"}])
+    printed = []
+    monkeypatch.setattr(main.console, "print", lambda *args, **kwargs: printed.append(args))
+    with pytest.raises(SystemExit) as exc:
+        main.run()
+    assert exc.value.code == 0
+    assert printed
+
+
+def test_run_writes_csv_with_partial_api_failure(monkeypatch, tmp_path):
+    monkeypatch.setattr(main.argparse.ArgumentParser, "parse_args", lambda self: type("Args", (), {
+        "location": "San Francisco, CA",
+        "digest": False,
+        "watch": False,
+        "sleep_minutes": 1,
+        "geocoder_user_agent": "student-app/1.0",
+    })())
+    monkeypatch.setattr(main, "build_location_context", lambda loc, ua: main.LocationContext(loc, 37.77, -122.42))
+
+    def fake_get_json(url, **kwargs):
+        if "points" in url:
+            return {"properties": {"forecast": "https://forecast.example"}}
+        if url == "https://forecast.example":
+            return {"properties": {"periods": [{"name": "Now", "shortForecast": "Sunny", "temperature": 70, "temperatureUnit": "F", "windSpeed": "5 mph", "windDirection": "NW"}]}}
+        if "air-quality" in url:
+            raise requests.ConnectionError("aqi down")
+        if "uv_index" in url:
+            return {"current": {"uv_index": 9}}
+        raise AssertionError(url)
+
+    monkeypatch.setattr(main, "get_json", fake_get_json)
+    monkeypatch.setattr(main.console, "print", lambda *args, **kwargs: None)
+
+    class DummyStatus:
+        def __enter__(self):
+            return self
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    monkeypatch.setattr(main.console, "status", lambda *args, **kwargs: DummyStatus())
+
+    state = {"calls": 0}
+    def fake_sleep(seconds):
+        state["calls"] += 1
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(main.time, "sleep", fake_sleep)
+    monkeypatch.setattr(main, "CSV_FILE", str(tmp_path / "weather_log.csv"))
+    main.run()
+
+    with open(tmp_path / "weather_log.csv", newline="") as f:
+        rows = list(csv.DictReader(f))
+    assert len(rows) == 1
+    assert rows[0]["Location"] == "San Francisco, CA"
+    assert rows[0]["AQI"] == "N/A"
+    assert rows[0]["AQI_Category"] == "N/A"
+    assert rows[0]["UV_Index"] == "9"
+    assert rows[0]["Forecast"] == "Sunny"

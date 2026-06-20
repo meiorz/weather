@@ -1,10 +1,9 @@
 import requests
 
-HEADERS = {"User-Agent": "PythonWeatherScript/2.0", "Accept": "application/geo+json"}
-TIMEOUT = 60
+from config import HEADERS, TIMEOUT
 
 
-def get_forecast_digest(lat: float, lon: float, *, session: requests.Session = None) -> list[dict]:
+def get_forecast_digest(lat: float, lon: float, *, session: requests.Session | None = None) -> list[dict]:
     """Fetch next 6 NOAA forecast periods and return normalized dicts."""
     _session = session or requests.Session()
 
@@ -20,14 +19,14 @@ def get_forecast_digest(lat: float, lon: float, *, session: requests.Session = N
     digest = []
     for p in periods:
         wind_speed = p.get("windSpeed")
-        wind_dir   = p.get("windDirection")
+        wind_dir = p.get("windDirection")
         wind = "N/A" if (wind_speed is None and wind_dir is None) else f"{wind_speed} {wind_dir}".strip()
         digest.append({
-            "name":              p.get("name", "N/A"),
-            "temperature":       p.get("temperature", "N/A"),
-            "temp_unit":         p.get("temperatureUnit", "F"),
-            "wind":              wind,
-            "short_forecast":    p.get("shortForecast", "N/A"),
+            "name": p.get("name", "N/A"),
+            "temperature": p.get("temperature", "N/A"),
+            "temp_unit": p.get("temperatureUnit", "F"),
+            "wind": wind,
+            "short_forecast": p.get("shortForecast", "N/A"),
             "detailed_forecast": p.get("detailedForecast", "N/A"),
         })
     return digest
