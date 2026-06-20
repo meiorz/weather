@@ -160,7 +160,7 @@ class WeatherApp(App):
 
     async def on_mount(self) -> None:
         # Ensure the prompt is ready immediately
-        self.set_focus("#command-input")
+        self.query_one("#command-input").focus()
         # Kick off initial location + first fetch using background threads
         await self._set_location(self.state.location)
         self._start_polling_timer()
