@@ -1,9 +1,8 @@
-# NEW: added argparse, sys; added forecast_digest import
 import time
 import csv
 import os
-import sys                          # NEW
-import argparse                     # NEW
+import sys
+import argparse
 import requests
 from datetime import datetime
 from rich.console import Console
@@ -11,7 +10,7 @@ from rich.panel import Panel
 from rich.table import Table
 from rich import box
 from geocode_location import geocode_location
-from forecast_digest import get_forecast_digest  # NEW
+from forecast_digest import get_forecast_digest
 
 CSV_FILE = "weather_log.csv"
 HEADERS = {"User-Agent": "PythonWeatherScript/2.0", "Accept": "application/geo+json"}
@@ -23,6 +22,7 @@ session = requests.Session()
 location_name: str = ""
 LAT: float = 0.0
 LON: float = 0.0
+
 
 def get_aqi_category(aqi, *, rich: bool = False) -> str:
     """Return AQI category string. Pass rich=True for Rich markup color tags."""
@@ -67,7 +67,7 @@ def safe_get(d: dict, *keys, default="N/A"):
         cur = cur[k]
     return cur
 
-# NEW: digest panel renderer
+
 def create_digest_panel(digest: list[dict], location: str) -> Panel:
     table = Table(show_header=True, box=box.SIMPLE_HEAD)
     table.add_column("Period",   style="bold cyan",  min_width=16)
@@ -78,7 +78,7 @@ def create_digest_panel(digest: list[dict], location: str) -> Panel:
     for p in digest:
         table.add_row(
             p["name"],
-            f"{p['temperature']}°{p['temp_unit']}",
+            f"{p['temperature']}\u00b0{p['temp_unit']}",
             p["wind"],
             p["short_forecast"],
         )
@@ -90,6 +90,7 @@ def create_digest_panel(digest: list[dict], location: str) -> Panel:
         expand=False,
     )
 
+
 def get_json(url: str, *, headers=None, params=None, timeout: int = TIMEOUT, retries: int = 3):
     for attempt in range(retries):
         try:
@@ -99,19 +100,37 @@ def get_json(url: str, *, headers=None, params=None, timeout: int = TIMEOUT, ret
         except (requests.Timeout, requests.ConnectionError):
             if attempt == retries - 1:
                 raise
-            time.sleep(2 ** attempt)  # 1s, 2s, 4s
+            time.sleep(2 ** attempt)
 
 
 def run():
     global location_name, LAT, LON
 
-    loc = input("Enter your location: ")
+    parser = argparse.ArgumentParser(description="Terminal weather dashboard")
+    parser.add_argument("--location", "-l", type=str, default=None,
+                        help="Location string (skips interactive prompt)")
+    parser.add_argument("--digest", action="store_true",
+                        help="Print 6-period forecast digest and exit")
+    parser.add_argument("--watch", action="store_true",
+                        help="With --digest: refresh every 6 hours instead of exiting")
+    args = parser.parse_args()
+
+    loc = args.location if args.location else input("Enter your location: ")
     LAT, LON = geocode_location(loc)
     location_name = loc
 
     console.print(f"[bold cyan]Initializing connections for {location_name} ({LAT}, {LON})...[/bold cyan]")
 
     try:
+        if args.digest:
+            while True:
+                digest = get_forecast_digest(LAT, LON, session=session)
+                console.print(create_digest_panel(digest, location_name))
+                if not args.watch:
+                    sys.exit(0)
+                with console.status("[bold dark_gray]Next digest in 6 hours...[/bold dark_gray]", spinner="dots"):
+                    time.sleep(6 * 60 * 60)
+
         points_url = f"https://api.weather.gov/points/{LAT},{LON}"
         points_json = get_json(points_url, headers=HEADERS)
         forecast_url = points_json["properties"]["forecast"]
