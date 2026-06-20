@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Optional
 
-from rich.console import RenderableType
+from rich.console import RenderableType, Group
 from rich.panel import Panel
 
 from textual.app import App, ComposeResult
@@ -79,8 +79,7 @@ class WeatherView(Static):
     def push_panel(self, panel: RenderableType) -> None:
         self._panels.append(panel)
         self._panels = self._panels[-40:]
-        self.update(Vertical(*self._panels))
-        self.scroll_end(animate=False)
+        self.update(Group(*self._panels))
 
     def clear(self) -> None:
         self._panels.clear()
