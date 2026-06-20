@@ -1,13 +1,13 @@
 import requests
 
-def geocode_location(query: str, *, timeout=20):
+
+def geocode_location(query: str, *, timeout: int = 20) -> tuple[float, float]:
     """
     query: e.g. 'Nob Hill, San Francisco, CA' or '1600 Amphitheatre Pkwy, Mountain View, CA'
     returns: (lat, lon) as floats
     """
     url = "https://nominatim.openstreetmap.org/search"
     params = {"q": query, "format": "json", "limit": 1}
-
     headers = {
         "User-Agent": "WeatherLogger/1.0 (mokubo3@mail.ccsf.edu)"
     }
