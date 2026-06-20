@@ -1,6 +1,9 @@
+# NEW: added argparse, sys; added forecast_digest import
 import time
 import csv
 import os
+import sys                          # NEW
+import argparse                     # NEW
 import requests
 from datetime import datetime
 from rich.console import Console
@@ -8,6 +11,7 @@ from rich.panel import Panel
 from rich.table import Table
 from rich import box
 from geocode_location import geocode_location
+from forecast_digest import get_forecast_digest  # NEW
 
 CSV_FILE = "weather_log.csv"
 HEADERS = {"User-Agent": "PythonWeatherScript/2.0", "Accept": "application/geo+json"}
@@ -16,11 +20,9 @@ TIMEOUT = 60
 console = Console()
 session = requests.Session()
 
-# These are set at runtime; tests that mock them can patch after import
 location_name: str = ""
 LAT: float = 0.0
 LON: float = 0.0
-
 
 def get_aqi_category(aqi, *, rich: bool = False) -> str:
     """Return AQI category string. Pass rich=True for Rich markup color tags."""
@@ -65,6 +67,28 @@ def safe_get(d: dict, *keys, default="N/A"):
         cur = cur[k]
     return cur
 
+# NEW: digest panel renderer
+def create_digest_panel(digest: list[dict], location: str) -> Panel:
+    table = Table(show_header=True, box=box.SIMPLE_HEAD)
+    table.add_column("Period",   style="bold cyan",  min_width=16)
+    table.add_column("Temp",     style="green",       min_width=6)
+    table.add_column("Wind",     style="white",       min_width=14)
+    table.add_column("Forecast", style="dim white",   min_width=20)
+
+    for p in digest:
+        table.add_row(
+            p["name"],
+            f"{p['temperature']}°{p['temp_unit']}",
+            p["wind"],
+            p["short_forecast"],
+        )
+
+    return Panel(
+        table,
+        title=f"[bold cyan]{location}[/bold cyan] | 6-Period Digest",
+        border_style="cyan",
+        expand=False,
+    )
 
 def get_json(url: str, *, headers=None, params=None, timeout: int = TIMEOUT, retries: int = 3):
     for attempt in range(retries):

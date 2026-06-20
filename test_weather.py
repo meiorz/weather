@@ -132,6 +132,56 @@ class TestGetJson(unittest.TestCase):
             get_json("http://example.com", retries=3)
         self.assertEqual(mock_session.get.call_count, 3)
 
+# NEW
+from forecast_digest import get_forecast_digest
+
+
+class TestForecastDigest(unittest.TestCase):
+    def _mock_session(self, periods):
+        mock_session = MagicMock()
+        points_resp = MagicMock()
+        points_resp.raise_for_status.return_value = None
+        points_resp.json.return_value = {
+            "properties": {"forecast": "http://fake-forecast-url"}
+        }
+        forecast_resp = MagicMock()
+        forecast_resp.raise_for_status.return_value = None
+        forecast_resp.json.return_value = {"properties": {"periods": periods}}
+        mock_session.get.side_effect = [points_resp, forecast_resp]
+        return mock_session
+
+    def _make_periods(self, n):
+        return [
+            {"name": f"Period {i}", "temperature": 70 + i, "temperatureUnit": "F",
+             "windSpeed": "10 mph", "windDirection": "W",
+             "shortForecast": "Sunny", "detailedForecast": "Very sunny."}
+            for i in range(n)
+        ]
+
+    def test_returns_six_periods(self):
+        session = self._mock_session(self._make_periods(12))
+        result = get_forecast_digest(37.77, -122.41, session=session)
+        self.assertEqual(len(result), 6)
+
+    def test_fewer_than_six_periods(self):
+        session = self._mock_session(self._make_periods(3))
+        result = get_forecast_digest(37.77, -122.41, session=session)
+        self.assertEqual(len(result), 3)
+
+    def test_wind_none_becomes_na(self):
+        periods = self._make_periods(1)
+        periods[0]["windSpeed"] = None
+        periods[0]["windDirection"] = None
+        session = self._mock_session(periods)
+        result = get_forecast_digest(37.77, -122.41, session=session)
+        self.assertEqual(result[0]["wind"], "N/A")
+
+    def test_normalized_keys_present(self):
+        session = self._mock_session(self._make_periods(6))
+        result = get_forecast_digest(37.77, -122.41, session=session)
+        expected_keys = {"name", "temperature", "temp_unit", "wind",
+                         "short_forecast", "detailed_forecast"}
+        self.assertEqual(set(result[0].keys()), expected_keys)
 
 if __name__ == "__main__":
     unittest.main()
