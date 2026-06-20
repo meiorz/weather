@@ -50,7 +50,7 @@ def test_build_location_context_passes_user_agent(monkeypatch):
     ctx = main.build_location_context("San Francisco, CA", "student-app/1.0")
     assert ctx.name == "San Francisco, CA"
     assert ctx.lat == 37.77
-    assert ctx.lon == 122.42 or ctx.lon == -122.42
+    assert ctx.lon == -122.42
     assert seen == {"query": "San Francisco, CA", "user_agent": "student-app/1.0"}
 
 
