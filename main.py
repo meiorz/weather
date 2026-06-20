@@ -9,15 +9,17 @@ from rich.table import Table
 from rich import box
 from geocode_location import geocode_location
 
-loc = input("Enter your location: ")
-LAT, LON = geocode_location(loc)
-
-location_name = loc
-
 CSV_FILE = "weather_log.csv"
 HEADERS = {"User-Agent": "PythonWeatherScript/2.0", "Accept": "application/geo+json"}
+TIMEOUT = 60
 
 console = Console()
+session = requests.Session()
+
+# These are set at runtime; tests that mock them can patch after import
+location_name: str = ""
+LAT: float = 0.0
+LON: float = 0.0
 
 
 def get_aqi_category(aqi, *, rich: bool = False) -> str:
@@ -64,10 +66,6 @@ def safe_get(d: dict, *keys, default="N/A"):
     return cur
 
 
-session = requests.Session()
-TIMEOUT = 60
-
-
 def get_json(url: str, *, headers=None, params=None, timeout: int = TIMEOUT, retries: int = 3):
     for attempt in range(retries):
         try:
@@ -80,78 +78,89 @@ def get_json(url: str, *, headers=None, params=None, timeout: int = TIMEOUT, ret
             time.sleep(2 ** attempt)  # 1s, 2s, 4s
 
 
-console.print(f"[bold cyan]Initializing connections for {location_name} ({LAT}, {LON})...[/bold cyan]")
+def run():
+    global location_name, LAT, LON
 
-try:
-    points_url = f"https://api.weather.gov/points/{LAT},{LON}"
-    points_json = get_json(points_url, headers=HEADERS)
-    forecast_url = points_json["properties"]["forecast"]
+    loc = input("Enter your location: ")
+    LAT, LON = geocode_location(loc)
+    location_name = loc
 
-    fieldnames = ["Timestamp", "Location", "Period", "Forecast",
-                  "Temperature", "Wind", "UV_Index", "AQI", "AQI_Category"]
+    console.print(f"[bold cyan]Initializing connections for {location_name} ({LAT}, {LON})...[/bold cyan]")
 
-    console.print(
-        f"[bold green]Grid endpoints retrieved.[/bold green] "
-        f"Logging to [italic]{CSV_FILE}[/italic]. Press Ctrl+C to exit.\n"
-    )
+    try:
+        points_url = f"https://api.weather.gov/points/{LAT},{LON}"
+        points_json = get_json(points_url, headers=HEADERS)
+        forecast_url = points_json["properties"]["forecast"]
 
-    while True:
-        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        fieldnames = ["Timestamp", "Location", "Period", "Forecast",
+                      "Temperature", "Wind", "UV_Index", "AQI", "AQI_Category"]
 
-        forecast_json = get_json(forecast_url, headers=HEADERS)
-        period = forecast_json["properties"]["periods"][0]
+        console.print(
+            f"[bold green]Grid endpoints retrieved.[/bold green] "
+            f"Logging to [italic]{CSV_FILE}[/italic]. Press Ctrl+C to exit.\n"
+        )
 
-        temp      = period.get("temperature", "N/A")
-        temp_unit = period.get("temperatureUnit", "F")
-        wind_speed = period.get("windSpeed")
-        wind_dir   = period.get("windDirection")
-        wind = "N/A" if (wind_speed is None and wind_dir is None) else f"{wind_speed} {wind_dir}".strip()
+        while True:
+            timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-        aq_url  = (f"https://air-quality-api.open-meteo.com/v1/air-quality"
-                   f"?latitude={LAT}&longitude={LON}&current=us_aqi")
-        aqi = get_json(aq_url, timeout=TIMEOUT).get("current", {}).get("us_aqi", "N/A")
+            forecast_json = get_json(forecast_url, headers=HEADERS)
+            period = forecast_json["properties"]["periods"][0]
 
-        uv_url = (f"https://api.open-meteo.com/v1/forecast"
-                  f"?latitude={LAT}&longitude={LON}&current=uv_index")
-        uv = get_json(uv_url, timeout=TIMEOUT).get("current", {}).get("uv_index", "N/A")
+            temp      = period.get("temperature", "N/A")
+            temp_unit = period.get("temperatureUnit", "F")
+            wind_speed = period.get("windSpeed")
+            wind_dir   = period.get("windDirection")
+            wind = "N/A" if (wind_speed is None and wind_dir is None) else f"{wind_speed} {wind_dir}".strip()
 
-        plain_cat = get_aqi_category(aqi) if aqi != "N/A" else "N/A"
-        rich_cat  = get_aqi_category(aqi, rich=True) if aqi != "N/A" else "N/A"
+            aq_url = (f"https://air-quality-api.open-meteo.com/v1/air-quality"
+                      f"?latitude={LAT}&longitude={LON}&current=us_aqi")
+            aqi = get_json(aq_url, timeout=TIMEOUT).get("current", {}).get("us_aqi", "N/A")
 
-        data = {
-            "Timestamp":       timestamp,
-            "Location":        location_name,
-            "Period":          period.get("name", "N/A"),
-            "Forecast":        period.get("shortForecast", "N/A"),
-            "Temperature":     f"{temp}\u00b0{temp_unit}",
-            "Wind":            wind,
-            "UV_Index":        uv,
-            "AQI":             aqi,
-            "AQI_Category":    plain_cat,
-            "AQI_Category_Rich": rich_cat,
-        }
+            uv_url = (f"https://api.open-meteo.com/v1/forecast"
+                      f"?latitude={LAT}&longitude={LON}&current=uv_index")
+            uv = get_json(uv_url, timeout=TIMEOUT).get("current", {}).get("uv_index", "N/A")
 
-        console.print(create_weather_panel(data))
+            plain_cat = get_aqi_category(aqi) if aqi != "N/A" else "N/A"
+            rich_cat  = get_aqi_category(aqi, rich=True) if aqi != "N/A" else "N/A"
 
-        file_exists = os.path.isfile(CSV_FILE)
-        csv_row = {k: data[k] for k in fieldnames}
+            data = {
+                "Timestamp":         timestamp,
+                "Location":          location_name,
+                "Period":            period.get("name", "N/A"),
+                "Forecast":          period.get("shortForecast", "N/A"),
+                "Temperature":       f"{temp}\u00b0{temp_unit}",
+                "Wind":              wind,
+                "UV_Index":          uv,
+                "AQI":               aqi,
+                "AQI_Category":      plain_cat,
+                "AQI_Category_Rich": rich_cat,
+            }
 
-        with open(CSV_FILE, mode="a", newline="") as f:
-            writer = csv.DictWriter(f, fieldnames=fieldnames)
-            if not file_exists:
-                writer.writeheader()
-            writer.writerow(csv_row)
+            console.print(create_weather_panel(data))
 
-        sleep_minutes = 30
-        with console.status(
-            f"[bold dark_gray]Sleeping for {sleep_minutes} minutes... Next fetch scheduled.[/bold dark_gray]",
-            spinner="dots",
-        ):
-            time.sleep(sleep_minutes * 60)
+            file_exists = os.path.isfile(CSV_FILE)
+            csv_row = {k: data[k] for k in fieldnames}
 
-except KeyboardInterrupt:
-    console.print("\n[bold red]Script terminated by user.[/bold red]")
-except requests.RequestException as e:
-    console.print(f"\n[bold red]Network/API error:[/bold red] {e}")
-except Exception as e:
-    console.print(f"\n[bold red]An error occurred:[/bold red] {e}")
+            with open(CSV_FILE, mode="a", newline="") as f:
+                writer = csv.DictWriter(f, fieldnames=fieldnames)
+                if not file_exists:
+                    writer.writeheader()
+                writer.writerow(csv_row)
+
+            sleep_minutes = 30
+            with console.status(
+                f"[bold dark_gray]Sleeping for {sleep_minutes} minutes... Next fetch scheduled.[/bold dark_gray]",
+                spinner="dots",
+            ):
+                time.sleep(sleep_minutes * 60)
+
+    except KeyboardInterrupt:
+        console.print("\n[bold red]Script terminated by user.[/bold red]")
+    except requests.RequestException as e:
+        console.print(f"\n[bold red]Network/API error:[/bold red] {e}")
+    except Exception as e:
+        console.print(f"\n[bold red]An error occurred:[/bold red] {e}")
+
+
+if __name__ == "__main__":
+    run()
