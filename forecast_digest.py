@@ -1,8 +1,5 @@
 import requests
-
-HEADERS = {"User-Agent": "PythonWeatherScript/2.0", "Accept": "application/geo+json"}
-TIMEOUT = 60
-
+from config import HEADERS, TIMEOUT
 
 def get_forecast_digest(lat: float, lon: float, *, session: requests.Session = None) -> list[dict]:
     """Fetch next 6 NOAA forecast periods and return normalized dicts."""
