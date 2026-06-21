@@ -150,7 +150,7 @@ def run():
                 forecast_json = get_json(forecast_url, headers=HEADERS)
                 period = forecast_json["properties"]["periods"][0]
             except Exception as e:
-                console.print(f"[bold yellow]Warning: Failed to fetch forecast. Please check your connection or retry later. ({e})[/bold yellow]")
+                console.print(f"[bold yellow]Warning: Unable to retrieve forecast data from weather.gov. ({e})[/bold yellow]")
                 period = {}
 
             temp      = period.get("temperature", "N/A")
@@ -165,7 +165,7 @@ def run():
                 aq_json = get_json(aq_url, timeout=TIMEOUT)
                 aqi = safe_get(aq_json, "current", "us_aqi", default="N/A")
             except Exception as e:
-                console.print(f"[bold yellow]Warning: Failed to fetch AQI. Please check your connection or retry later. ({e})[/bold yellow]")
+                console.print(f"[bold yellow]Warning: Unable to retrieve air quality data from open-meteo.com. ({e})[/bold yellow]")
                 aqi = "N/A"
 
             try:
@@ -174,7 +174,7 @@ def run():
                 uv_json = get_json(uv_url, timeout=TIMEOUT)
                 uv = safe_get(uv_json, "current", "uv_index", default="N/A")
             except Exception as e:
-                console.print(f"[bold yellow]Warning: Failed to fetch UV Index. Please check your connection or retry later. ({e})[/bold yellow]")
+                console.print(f"[bold yellow]Warning: Unable to retrieve UV index data from open-meteo.com. ({e})[/bold yellow]")
                 uv = "N/A"
 
             plain_cat = get_aqi_category(aqi) if aqi != "N/A" else "N/A"
