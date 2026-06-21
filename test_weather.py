@@ -87,7 +87,7 @@ class TestGeocodeLocation(unittest.TestCase):
         mock_get.return_value = self._mock_response(
             [{"lat": "37.7749", "lon": "-122.4194"}]
         )
-        lat, lon = geocode_location("San Francisco, CA")
+        lat, lon = geocode_location("San Francisco, CA", "test@example.com")
         self.assertAlmostEqual(lat, 37.7749)
         self.assertAlmostEqual(lon, -122.4194)
 
@@ -95,16 +95,16 @@ class TestGeocodeLocation(unittest.TestCase):
     def test_empty_result_raises(self, mock_get):
         mock_get.return_value = self._mock_response([])
         with self.assertRaises(ValueError):
-            geocode_location("nowhere land xyzzy")
+            geocode_location("nowhere land xyzzy", "test@example.com")
 
     @patch("geocode_location.requests.get")
     def test_correct_user_agent_sent(self, mock_get):
         mock_get.return_value = self._mock_response(
             [{"lat": "0", "lon": "0"}]
         )
-        geocode_location("Tokyo")
+        geocode_location("Tokyo", "test@example.com")
         _, kwargs = mock_get.call_args
-        self.assertIn("User-Agent", kwargs["headers"])
+        self.assertIn("test@example.com", kwargs["headers"]["User-Agent"])
 
 
 # ---------------------------------------------------------------------------

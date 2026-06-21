@@ -11,17 +11,10 @@ from rich.table import Table
 from rich import box
 from geocode_location import geocode_location
 from forecast_digest import get_forecast_digest
-
-CSV_FILE = "weather_log.csv"
-HEADERS = {"User-Agent": "PythonWeatherScript/2.0", "Accept": "application/geo+json"}
-TIMEOUT = 60
+from config import CSV_FILE, HEADERS, TIMEOUT
 
 console = Console()
 session = requests.Session()
-
-location_name: str = ""
-LAT: float = 0.0
-LON: float = 0.0
 
 
 def get_aqi_category(aqi, *, rich: bool = False) -> str:
@@ -40,7 +33,7 @@ def get_aqi_category(aqi, *, rich: bool = False) -> str:
     return "[blink red]Hazardous[/blink red]" if rich else "Hazardous"
 
 
-def create_weather_panel(data: dict) -> Panel:
+def create_weather_panel(data: dict, location_name: str) -> Panel:
     table = Table(show_header=False, box=box.SIMPLE)
     table.add_column("Metric", style="dim", width=15)
     table.add_column("Value", style="bold white")
@@ -104,34 +97,41 @@ def get_json(url: str, *, headers=None, params=None, timeout: int = TIMEOUT, ret
 
 
 def run():
-    global location_name, LAT, LON
-
     parser = argparse.ArgumentParser(description="Terminal weather dashboard")
     parser.add_argument("--location", "-l", type=str, default=None,
                         help="Location string (skips interactive prompt)")
+    parser.add_argument("--email", "-e", type=str,
+                        help="Email address for the User-Agent header (falls back to WEATHER_EMAIL env var)")
+    parser.add_argument("--interval", "-i", type=int, default=30,
+                        help="Sleep interval in minutes between fetches (default: 30)")
     parser.add_argument("--digest", action="store_true",
                         help="Print 6-period forecast digest and exit")
     parser.add_argument("--watch", action="store_true",
                         help="With --digest: refresh every 6 hours instead of exiting")
     args = parser.parse_args()
 
+    email = args.email or os.environ.get("WEATHER_EMAIL")
+    if not email:
+        console.print("[bold red]Error: Email is required. Provide it via --email or WEATHER_EMAIL environment variable.[/bold red]")
+        sys.exit(1)
+
     loc = args.location if args.location else input("Enter your location: ")
-    LAT, LON = geocode_location(loc)
+    lat, lon = geocode_location(loc, email)
     location_name = loc
 
-    console.print(f"[bold cyan]Initializing connections for {location_name} ({LAT}, {LON})...[/bold cyan]")
+    console.print(f"[bold cyan]Initializing connections for {location_name} ({lat}, {lon})...[/bold cyan]")
 
     try:
         if args.digest:
             while True:
-                digest = get_forecast_digest(LAT, LON, session=session)
+                digest = get_forecast_digest(lat, lon, session=session)
                 console.print(create_digest_panel(digest, location_name))
                 if not args.watch:
                     sys.exit(0)
                 with console.status("[bold dark_gray]Next digest in 6 hours...[/bold dark_gray]", spinner="dots"):
                     time.sleep(6 * 60 * 60)
 
-        points_url = f"https://api.weather.gov/points/{LAT},{LON}"
+        points_url = f"https://api.weather.gov/points/{lat},{lon}"
         points_json = get_json(points_url, headers=HEADERS)
         forecast_url = points_json["properties"]["forecast"]
 
@@ -146,8 +146,12 @@ def run():
         while True:
             timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-            forecast_json = get_json(forecast_url, headers=HEADERS)
-            period = forecast_json["properties"]["periods"][0]
+            try:
+                forecast_json = get_json(forecast_url, headers=HEADERS)
+                period = forecast_json["properties"]["periods"][0]
+            except Exception as e:
+                console.print(f"[bold yellow]Warning: Unable to retrieve forecast data from weather.gov. ({e})[/bold yellow]")
+                period = {}
 
             temp      = period.get("temperature", "N/A")
             temp_unit = period.get("temperatureUnit", "F")
@@ -155,13 +159,23 @@ def run():
             wind_dir   = period.get("windDirection")
             wind = "N/A" if (wind_speed is None and wind_dir is None) else f"{wind_speed} {wind_dir}".strip()
 
-            aq_url = (f"https://air-quality-api.open-meteo.com/v1/air-quality"
-                      f"?latitude={LAT}&longitude={LON}&current=us_aqi")
-            aqi = get_json(aq_url, timeout=TIMEOUT).get("current", {}).get("us_aqi", "N/A")
+            try:
+                aq_url = (f"https://air-quality-api.open-meteo.com/v1/air-quality"
+                          f"?latitude={lat}&longitude={lon}&current=us_aqi")
+                aq_json = get_json(aq_url, timeout=TIMEOUT)
+                aqi = safe_get(aq_json, "current", "us_aqi", default="N/A")
+            except Exception as e:
+                console.print(f"[bold yellow]Warning: Unable to retrieve air quality data from open-meteo.com. ({e})[/bold yellow]")
+                aqi = "N/A"
 
-            uv_url = (f"https://api.open-meteo.com/v1/forecast"
-                      f"?latitude={LAT}&longitude={LON}&current=uv_index")
-            uv = get_json(uv_url, timeout=TIMEOUT).get("current", {}).get("uv_index", "N/A")
+            try:
+                uv_url = (f"https://api.open-meteo.com/v1/forecast"
+                          f"?latitude={lat}&longitude={lon}&current=uv_index")
+                uv_json = get_json(uv_url, timeout=TIMEOUT)
+                uv = safe_get(uv_json, "current", "uv_index", default="N/A")
+            except Exception as e:
+                console.print(f"[bold yellow]Warning: Unable to retrieve UV index data from open-meteo.com. ({e})[/bold yellow]")
+                uv = "N/A"
 
             plain_cat = get_aqi_category(aqi) if aqi != "N/A" else "N/A"
             rich_cat  = get_aqi_category(aqi, rich=True) if aqi != "N/A" else "N/A"
@@ -179,7 +193,7 @@ def run():
                 "AQI_Category_Rich": rich_cat,
             }
 
-            console.print(create_weather_panel(data))
+            console.print(create_weather_panel(data, location_name))
 
             file_exists = os.path.isfile(CSV_FILE)
             csv_row = {k: data[k] for k in fieldnames}
@@ -190,12 +204,11 @@ def run():
                     writer.writeheader()
                 writer.writerow(csv_row)
 
-            sleep_minutes = 30
             with console.status(
-                f"[bold dark_gray]Sleeping for {sleep_minutes} minutes... Next fetch scheduled.[/bold dark_gray]",
+                f"[bold dark_gray]Sleeping for {args.interval} minutes... Next fetch scheduled.[/bold dark_gray]",
                 spinner="dots",
             ):
-                time.sleep(sleep_minutes * 60)
+                time.sleep(args.interval * 60)
 
     except KeyboardInterrupt:
         console.print("\n[bold red]Script terminated by user.[/bold red]")
