@@ -100,8 +100,8 @@ def run():
     parser = argparse.ArgumentParser(description="Terminal weather dashboard")
     parser.add_argument("--location", "-l", type=str, default=None,
                         help="Location string (skips interactive prompt)")
-    parser.add_argument("--email", "-e", type=str, required=True,
-                        help="Email address for the User-Agent header (required by Nominatim)")
+    parser.add_argument("--email", "-e", type=str,
+                        help="Email address for the User-Agent header (falls back to WEATHER_EMAIL env var)")
     parser.add_argument("--interval", "-i", type=int, default=30,
                         help="Sleep interval in minutes between fetches (default: 30)")
     parser.add_argument("--digest", action="store_true",
@@ -110,8 +110,13 @@ def run():
                         help="With --digest: refresh every 6 hours instead of exiting")
     args = parser.parse_args()
 
+    email = args.email or os.environ.get("WEATHER_EMAIL")
+    if not email:
+        console.print("[bold red]Error: Email is required. Provide it via --email or WEATHER_EMAIL environment variable.[/bold red]")
+        sys.exit(1)
+
     loc = args.location if args.location else input("Enter your location: ")
-    lat, lon = geocode_location(loc, args.email)
+    lat, lon = geocode_location(loc, email)
     location_name = loc
 
     console.print(f"[bold cyan]Initializing connections for {location_name} ({lat}, {lon})...[/bold cyan]")
@@ -145,7 +150,7 @@ def run():
                 forecast_json = get_json(forecast_url, headers=HEADERS)
                 period = forecast_json["properties"]["periods"][0]
             except Exception as e:
-                console.print(f"[bold yellow]Warning: Failed to fetch forecast:[/bold yellow] {e}")
+                console.print(f"[bold yellow]Warning: Failed to fetch forecast. Please check your connection or retry later. ({e})[/bold yellow]")
                 period = {}
 
             temp      = period.get("temperature", "N/A")
@@ -160,7 +165,7 @@ def run():
                 aq_json = get_json(aq_url, timeout=TIMEOUT)
                 aqi = safe_get(aq_json, "current", "us_aqi", default="N/A")
             except Exception as e:
-                console.print(f"[bold yellow]Warning: Failed to fetch AQI:[/bold yellow] {e}")
+                console.print(f"[bold yellow]Warning: Failed to fetch AQI. Please check your connection or retry later. ({e})[/bold yellow]")
                 aqi = "N/A"
 
             try:
@@ -169,7 +174,7 @@ def run():
                 uv_json = get_json(uv_url, timeout=TIMEOUT)
                 uv = safe_get(uv_json, "current", "uv_index", default="N/A")
             except Exception as e:
-                console.print(f"[bold yellow]Warning: Failed to fetch UV Index:[/bold yellow] {e}")
+                console.print(f"[bold yellow]Warning: Failed to fetch UV Index. Please check your connection or retry later. ({e})[/bold yellow]")
                 uv = "N/A"
 
             plain_cat = get_aqi_category(aqi) if aqi != "N/A" else "N/A"
